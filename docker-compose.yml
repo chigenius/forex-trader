@@ -1,0 +1,33 @@
+# forexml has no server process to "start" — it's a CLI. `docker compose up`
+# just prints --help and exits; the useful pattern is `docker compose run`,
+# e.g.:
+#
+#   docker compose run --rm forexml validate-strategy \
+#     forexml/strategies/definitions/london_range_breakout.yaml
+#
+#   docker compose run --rm forexml ingest --source local --symbol EURUSD \
+#     --timeframe M15 --start 2024-01-01 --end 2024-04-01 \
+#     --store-path /data/barstore --input-path /data/bars/eurusd_m15.csv
+#
+#   docker compose run --rm forexml backtest \
+#     --strategy forexml/strategies/definitions/london_range_breakout.yaml \
+#     --symbol EURUSD --bars-path /data/bars/eurusd_m15.csv \
+#     --signal-store /data/signals.duckdb
+#
+# There is no live-trading service defined here: Phase 1 built the MT5
+# execution adapter (disabled by default) but not a scheduled loop that
+# calls it, and the MetaTrader5 package needs a Windows MT5 terminal this
+# Linux image can't provide. Add that service only once such a loop
+# exists and you have a Windows/Wine host to run MT5 alongside it.
+services:
+  forexml:
+    build: .
+    volumes:
+      # Bar store, signal store and decision log all live under here so
+      # they survive `docker compose down` / rebuilds. Drop local bar
+      # files to ingest under ./data/bars.
+      - ./data:/data
+    environment:
+      # Left unset on purpose — see execution/mt5.py. Never set this in a
+      # compose file checked into version control.
+      - FOREXML_LIVE_TRADING=${FOREXML_LIVE_TRADING:-}
