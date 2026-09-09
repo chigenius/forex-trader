@@ -1,0 +1,40 @@
+name: london_range_breakout
+symbols: [EURUSD, GBPUSD]
+timeframe: M15
+status: proposed        # proposed | approved | active | retired
+author: human           # human | agent
+enabled: true
+
+filters:
+  - type: session
+    value: london
+  - type: volatility_regime
+    operator: in
+    value: [normal, high]
+  - type: news_blackout
+    minutes_before: 30
+    minutes_after: 15
+
+entry:
+  conditions:
+    - type: price_breaks
+      reference: asian_session_high
+      confirmation: close
+    - type: indicator_comparison
+      left: atr_14
+      operator: '>'
+      right: atr_14_median_20
+
+exit:
+  stop_loss:
+    type: atr_multiple
+    multiple: 1.5
+  take_profit:
+    type: r_multiple
+    multiple: 2.0
+  time_stop:
+    bars: 32
+
+risk:
+  risk_per_trade_pct: 0.5
+  max_concurrent: 2

@@ -1,0 +1,12 @@
+# Example risk gate configuration (brief section 4.5). Loaded once at
+# process startup via RiskLimits.from_dict — changing a limit means
+# editing this file and restarting the process, never a runtime call.
+max_risk_per_trade_pct: 0.5
+max_concurrent_positions: 3
+max_total_risk_pct: 1.5
+correlated_exposure_cap_pct: 0.8
+daily_loss_limit_pct: 3.0
+weekly_loss_limit_pct: 6.0
+correlated_groups:
+  - [EURUSD, GBPUSD]
+  - [AUDUSD, NZDUSD]

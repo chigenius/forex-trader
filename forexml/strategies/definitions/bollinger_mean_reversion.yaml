@@ -1,0 +1,39 @@
+name: bollinger_mean_reversion
+symbols: [EURUSD]
+timeframe: H1
+status: proposed
+author: human
+enabled: true
+
+filters:
+  - type: volatility_regime
+    operator: in
+    value: [low, normal]
+  - type: news_blackout
+    minutes_before: 30
+    minutes_after: 15
+
+entry:
+  conditions:
+    - type: indicator_comparison
+      left: close
+      operator: '<'
+      right: bb_20_2.0_lower
+    - type: indicator_comparison
+      left: rsi_14
+      operator: '<'
+      right: 30
+
+exit:
+  stop_loss:
+    type: fixed_pips
+    pips: 25
+  take_profit:
+    type: r_multiple
+    multiple: 1.5
+  time_stop:
+    bars: 24
+
+risk:
+  risk_per_trade_pct: 0.3
+  max_concurrent: 1
