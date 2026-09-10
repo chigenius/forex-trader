@@ -6,6 +6,7 @@ docs/strategy_authoring_guide.md for the non-engineer view.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -206,17 +207,34 @@ def backtest(strategy_path, symbol, bars_path, signal_store_path, initial_equity
     "--poll-delay-seconds", type=int, default=5,
     help="wait this long after each bar-close boundary before polling, so the broker has time to publish it",
 )
+@click.option(
+    "--execution", "execution_kind", type=click.Choice(["simulated", "mt5"]), default="simulated",
+    help="'simulated' (default) never sends an order anywhere. 'mt5' places REAL orders through your "
+    "MT5 terminal — on whatever account is logged in there, demo or not — and additionally requires "
+    "--enable-live-orders and the FOREXML_LIVE_TRADING=1 environment variable.",
+)
+@click.option(
+    "--enable-live-orders", "enable_live_orders", is_flag=True, default=False,
+    help="required (together with FOREXML_LIVE_TRADING=1) to use --execution mt5. Refused otherwise.",
+)
+@click.option("--magic-number", type=int, default=20240101, help="MT5 magic number tagging this bot's orders")
 def paper_trade(
     strategy_path, symbol, store_path, signal_store_path, positions_store_path, ledger_store_path,
-    initial_equity, risk_config, server_utc_offset, poll_delay_seconds,
+    initial_equity, risk_config, server_utc_offset, poll_delay_seconds, execution_kind, enable_live_orders,
+    magic_number,
 ):
-    """Run a continuous paper-trading loop against a live MT5 terminal.
+    """Run a continuous trading loop against a live MT5 terminal.
 
-    Fills are always simulated (SimulatedExecutionAdapter): this never
-    places a real order, regardless of strategy status or
+    By default (--execution simulated) fills are always simulated: this
+    never places a real order, regardless of strategy status or
     FOREXML_LIVE_TRADING. Runs until interrupted (Ctrl+C); state
     (bar store, signal store, open positions, ledger) all persists to
     disk so it survives a restart.
+
+    --execution mt5 places REAL orders on whatever account your MT5
+    terminal is logged into — a demo account included: the guards below
+    protect against sending an order by accident, not against risking
+    real money specifically, so they behave identically either way.
     """
     try:
         from apscheduler.schedulers.blocking import BlockingScheduler
@@ -232,12 +250,33 @@ def paper_trade(
     if not is_tradeable(strategy.status):
         click.echo(
             f"warning: strategy status={strategy.status!r} — every signal will be logged "
-            "to the signal store but no paper position will ever open. Change `status` to "
+            "to the signal store but no position will ever open. Change `status` to "
             "`active` yourself in the YAML once you're satisfied with backtest results.",
             err=True,
         )
     if strategy.timeframe not in _CRON_FIELDS_BY_TIMEFRAME:
         raise click.UsageError(f"unsupported timeframe for paper-trade: {strategy.timeframe!r}")
+
+    if execution_kind == "mt5":
+        if not enable_live_orders:
+            raise click.UsageError(
+                "--execution mt5 requires --enable-live-orders as well — this is deliberately not the "
+                "default so real orders are never one flag away by accident"
+            )
+        if os.environ.get("FOREXML_LIVE_TRADING") != "1":
+            raise click.UsageError(
+                "--execution mt5 also requires the FOREXML_LIVE_TRADING=1 environment variable "
+                "(a second, independent guard — see forexml/execution/mt5.py)"
+            )
+        from ..execution.mt5 import MT5ExecutionAdapter
+
+        execution = MT5ExecutionAdapter(enable_live_trading=True, magic_number=magic_number)
+        click.echo(
+            "*** --execution mt5: REAL orders will be sent to whatever account your MT5 terminal "
+            "is logged into. Confirm that is the account you intend before signals start firing. ***"
+        )
+    else:
+        execution = None  # LiveTradingLoop defaults to SimulatedExecutionAdapter
 
     mt5_adapter = MT5Adapter(server_utc_offset_hours=server_utc_offset)
     mt5_adapter.connect()
@@ -260,6 +299,7 @@ def paper_trade(
         ledger=ledger,
         position_store=position_store,
         signal_store=signal_store,
+        execution=execution,
         initial_equity=initial_equity,
     )
 

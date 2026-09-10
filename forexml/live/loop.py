@@ -13,11 +13,19 @@ precisely so this same loop can be driven by `LocalFileAdapter` for
 testing (see tests/test_live_loop.py) before ever pointing it at a real
 MT5 terminal.
 
-Fills always go through `SimulatedExecutionAdapter` here: "paper trading"
-means simulated fills against real, live prices. Nothing in this module
-can place a real order — that is a separate, explicit step
-(`MT5ExecutionAdapter`, gated by `FOREXML_LIVE_TRADING`) this loop never
-touches.
+The execution adapter is pluggable (any `ExecutionAdapter`): the default
+is `SimulatedExecutionAdapter`, so "paper trading" means simulated fills
+against real, live prices with nothing ever reaching the broker. Passing
+an `MT5ExecutionAdapter` instead makes this loop place real orders — that
+adapter's own two independent guards (a constructor flag plus
+`FOREXML_LIVE_TRADING=1`) still gate every call, so wiring it in here is
+not by itself enough to trade for real; see `cli.main.paper_trade` for
+where that decision is actually made explicit.
+
+Closing a position round-trips whatever `Fill.broker_position_id` the
+opening fill returned, so a live adapter can target the correct broker
+position rather than guessing from direction alone (simulated fills
+leave this `None` throughout — there's no broker position to target).
 """
 from __future__ import annotations
 
@@ -29,7 +37,7 @@ from datetime import datetime, timedelta, timezone
 from ..data.adapters.base import DataAdapter
 from ..data.store import BarStore
 from ..data.validation import validate_bars
-from ..execution.base import Order
+from ..execution.base import ExecutionAdapter, Order
 from ..execution.simulated import SimulatedExecutionAdapter
 from ..features.context.calendar import EconomicCalendar
 from ..features.engine import TIMEFRAME_SECONDS, FeatureEngine, StoreBarSource
@@ -61,6 +69,7 @@ class LivePosition:
     time_stop_at: datetime | None
     mae: float = 0.0
     mfe: float = 0.0
+    broker_position_id: str | None = None
 
 
 class LiveTradingLoop:
@@ -81,7 +90,7 @@ class LiveTradingLoop:
         position_store: OpenPositionStore,
         signal_bus: SignalBus | None = None,
         signal_store: SignalStore | None = None,
-        execution: SimulatedExecutionAdapter | None = None,
+        execution: ExecutionAdapter | None = None,
         calendar: EconomicCalendar | None = None,
         initial_equity: float = 10_000.0,
         history_window_bars: int = 500,
@@ -216,6 +225,7 @@ class LiveTradingLoop:
             size_units=fill.size_units,
             opened_at=decision_ts,
             time_stop_at=time_stop_at,
+            broker_position_id=fill.broker_position_id,
         )
         self.open_positions.append(position)
         self.position_store.save(position)
@@ -258,6 +268,7 @@ class LiveTradingLoop:
                 timestamp_utc=decision_ts,
                 reference_bid=last_bid,
                 reference_ask=last_ask,
+                closes_position_id=position.broker_position_id,
             )
             fill = self.execution.submit_market_order(close_order)
             pnl = self._pnl(position, fill.fill_price) - fill.commission

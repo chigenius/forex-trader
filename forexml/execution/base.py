@@ -24,6 +24,12 @@ class Order:
     reference_ask: float | None = None
     volatility_regime: str | None = None
     news_blackout: bool = False
+    # Set when this order closes (or reduces) an existing broker position
+    # rather than opening a new one — the value is the `broker_position_id`
+    # a prior Fill returned. A live adapter that ignores this can end up
+    # opening an unrelated opposite position instead of closing the
+    # intended one, depending on the account's netting/hedging mode.
+    closes_position_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -36,6 +42,11 @@ class Fill:
     timestamp_utc: datetime
     commission: float
     slippage_pips: float
+    # The broker's identifier for the resulting position (e.g. an MT5
+    # ticket). None for adapters with no such concept (simulated fills).
+    # A caller that later closes this position must pass it back as
+    # `Order.closes_position_id`.
+    broker_position_id: str | None = None
 
 
 class ExecutionAdapter(abc.ABC):

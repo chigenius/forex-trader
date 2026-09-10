@@ -5,7 +5,19 @@ should be capable of placing a real order by accident. Two independent
 guards must both be satisfied before any broker call is made — a
 constructor flag (`enable_live_trading=True`) AND an environment variable
 (`FOREXML_LIVE_TRADING=1`). `_check_guards()` runs, and can raise, before
-the MetaTrader5 package is even imported.
+the MetaTrader5 package is even imported. Neither guard knows or cares
+whether the connected account is a demo — they protect against placing
+an order by accident, not against risking real money specifically, so
+the exact same guards apply identically to a demo or a funded account.
+
+Closing a position requires telling MT5 *which* position: a plain
+opposite-direction market order is not guaranteed to net against the
+original position (depends on the account's netting/hedging mode) and
+can instead open an unrelated second position. `Order.closes_position_id`
+(the ticket returned as `Fill.broker_position_id` when the position was
+opened) is threaded into the request's `position` field for exactly this
+reason — see `forexml.live.loop.LiveTradingLoop`, which is the caller
+responsible for round-tripping that id.
 """
 from __future__ import annotations
 
@@ -68,6 +80,11 @@ class MT5ExecutionAdapter(ExecutionAdapter):
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
+        if order.closes_position_id is not None:
+            # Targets a specific existing position rather than opening a
+            # new one — see the module docstring for why this matters.
+            request["position"] = int(order.closes_position_id)
+
         result = mt5.order_send(request)
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
             raise RuntimeError(f"MT5 order_send failed: {result}")
@@ -81,6 +98,11 @@ class MT5ExecutionAdapter(ExecutionAdapter):
             timestamp_utc=datetime.now(timezone.utc),
             commission=0.0,  # reconciled from the broker statement, not known at fill time
             slippage_pips=0.0,
+            # For a new position this IS the position ticket (MT5 sets the
+            # position id equal to the opening order's ticket for a plain
+            # market execution); for a close it's the closing deal's own
+            # order ticket, which the caller has no further use for.
+            broker_position_id=str(result.order),
         )
 
     def reconcile(self) -> list[dict]:

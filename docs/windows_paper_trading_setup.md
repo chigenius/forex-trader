@@ -137,3 +137,60 @@ python -c "import duckdb; print(duckdb.connect('data/ledger.duckdb').execute('SE
 
 There's no built-in alerting (email/SMS) if something goes wrong — check
 in on it periodically, especially in the first few days.
+
+## 10. Placing real orders on your demo account
+
+Everything above never touches your MT5 account — it only reads prices.
+To have it actually send orders (to the demo account you're logged into,
+or any account — see the warning below), add three things to the same
+command:
+
+```
+forexml paper-trade --strategy forexml\strategies\definitions\london_range_breakout.yaml ^
+  --symbol EURUSD --store-path data\barstore --signal-store data\signals.duckdb ^
+  --positions-store data\open_positions.duckdb --ledger-store data\ledger.duckdb ^
+  --server-utc-offset 2 --execution mt5 --enable-live-orders
+```
+
+plus, set the environment variable before running it (PowerShell):
+
+```
+$env:FOREXML_LIVE_TRADING = "1"
+```
+
+Both `--enable-live-orders` and `FOREXML_LIVE_TRADING=1` are required —
+either one missing and the command refuses to start. This is deliberate:
+real order placement should never be one flag, or one leftover
+environment variable from a previous session, away by accident.
+
+**Read this before you run it:** these guards protect against sending an
+order *by accident* — they have no concept of "demo" vs. "real money."
+Whatever account is logged into your MT5 terminal at the moment you run
+this command is the account that receives the orders. Before running
+with `--execution mt5`, look at the terminal and confirm — by eye — which
+account is logged in.
+
+**What you'll see once it's running:** exactly the same console output
+as paper mode (`opened paper position ...` / `closed paper position
+...`), except positions now actually appear in MT5's **Trade** tab and
+your account balance moves. The command still prints
+`"*** --execution mt5: REAL orders will be sent..."` on startup as a
+last checkpoint.
+
+**Known gaps, honestly stated:**
+
+- **No reconciliation.** If you (or anything else) closes a position
+  directly in the MT5 terminal, forexml's local ledger doesn't find out.
+  It will still believe that position is open and try to manage it —
+  when its stop/target/time-stop eventually fires, the resulting close
+  order targets a position that's no longer there and MT5 will reject
+  it, surfacing as an error in the console (not a silent failure, but
+  not handled gracefully either). Don't manually intervene in positions
+  this loop opened while it's running.
+- **No lot-size rounding.** Order volume isn't rounded to your symbol's
+  broker-defined volume step (commonly 0.01 lots) — a size that doesn't
+  land on a valid step is rejected by the broker with a loud error,
+  rather than silently rounded or filled anyway.
+- A rejected order (bad volume, market closed, requote, insufficient
+  margin) raises an exception in the poll — check the console when
+  that happens rather than assuming the position opened.

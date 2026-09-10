@@ -67,18 +67,32 @@ to disk, so stopping and restarting the process picks up exactly where
 it left off. For a training period on your own machine, see
 [`docs/windows_paper_trading_setup.md`](docs/windows_paper_trading_setup.md).
 
-**Live (real-money) trading.** Not built as a managed deployment yet —
-`execution/mt5.py` exists and is disabled by two independent guards
-(`FOREXML_LIVE_TRADING=1` plus an explicit constructor flag), but nothing
-currently routes `paper-trade`'s decisions to it; that wiring, plus
-picking it up from a properly deployed host, is deliberately left for
-later. When that time comes, the brief's recommendation (and the right
-one for this codebase) is a single small VPS running this container,
-co-located near the broker's servers for latency — not a cluster, not
-autoscaling. The `MetaTrader5` Python package only talks to a running MT5
-terminal, which is Windows-only, so that box needs to be Windows (or MT5
-under Wine) — this Docker image is Linux and only covers the
-data/backtest/analytics side.
+**Placing real orders.** `forexml paper-trade --execution mt5
+--enable-live-orders` (with `FOREXML_LIVE_TRADING=1` set in the
+environment — two independent guards, neither optional) routes the same
+loop's decisions through `MT5ExecutionAdapter` instead of simulating the
+fill. This sends real orders to whatever account your MT5 terminal is
+logged into, demo or real — the guards protect against sending an order
+by accident, not against risking real money specifically. See
+"Placing real orders on your demo account" in
+[`docs/windows_paper_trading_setup.md`](docs/windows_paper_trading_setup.md)
+before using it. Known gaps: there's no reconciliation between forexml's
+local ledger and the broker's actual position state (manually closing a
+position in the MT5 terminal will desync them until the framework's own
+stop/target/time-stop fires and finds nothing there to close), and order
+volume isn't rounded to the symbol's broker-defined volume step — a
+rejected order surfaces as a loud error, never a silent mis-fill, but
+neither is handled gracefully yet.
+
+**A dedicated deployment host** for round-the-clock real trading isn't
+built as a managed deployment yet — that's a separate step from having
+the code path work locally. When that time comes, the brief's
+recommendation (and the right one for this codebase) is a single small
+VPS running this container, co-located near the broker's servers for
+latency — not a cluster, not autoscaling. The `MetaTrader5` Python
+package only talks to a running MT5 terminal, which is Windows-only, so
+that box needs to be Windows (or MT5 under Wine) — this Docker image is
+Linux and only covers the data/backtest/analytics side.
 
 ## Documentation
 

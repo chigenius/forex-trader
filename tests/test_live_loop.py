@@ -45,7 +45,7 @@ def _write_bars_csv(path, n_days=6, seed=11):
     return df
 
 
-def _make_loop(tmp_path, bars_csv, strategy):
+def _make_loop(tmp_path, bars_csv, strategy, execution=None):
     bar_store = BarStore(tmp_path / "barstore")
     position_store = OpenPositionStore(tmp_path / "positions.duckdb")
     signal_store = SignalStore(tmp_path / "signals.duckdb")
@@ -71,6 +71,7 @@ def _make_loop(tmp_path, bars_csv, strategy):
         ledger=ledger,
         position_store=position_store,
         signal_store=signal_store,
+        execution=execution,
     )
     return loop, bar_store, position_store, signal_store, ledger
 
@@ -162,3 +163,67 @@ def test_proposed_strategy_logs_but_never_opens_a_paper_position(tmp_path):
     assert loop.open_positions == []
     assert loop.ledger.as_dataframe().height == 0
     assert loop.equity == 10_000.0
+
+
+class _FakeBrokerExecutionAdapter:
+    """Stands in for MT5ExecutionAdapter: assigns a unique ticket on every
+    opening order and asserts every closing order references a ticket
+    that is actually still open — exactly the invariant the real
+    MT5ExecutionAdapter fix (see execution/mt5.py) exists to preserve.
+    """
+
+    def __init__(self):
+        self._next_ticket = 1
+        self.open_tickets: set[str] = set()
+        self.close_calls: list[str] = []
+
+    def submit_market_order(self, order):
+        from forexml.execution.base import Fill
+
+        if order.closes_position_id is None:
+            ticket = str(self._next_ticket)
+            self._next_ticket += 1
+            self.open_tickets.add(ticket)
+            broker_position_id = ticket
+        else:
+            assert order.closes_position_id in self.open_tickets, (
+                f"close referenced ticket {order.closes_position_id!r} which isn't open: "
+                f"{self.open_tickets!r}"
+            )
+            self.open_tickets.discard(order.closes_position_id)
+            self.close_calls.append(order.closes_position_id)
+            broker_position_id = order.closes_position_id
+
+        price = order.reference_ask if order.direction == "long" else order.reference_bid
+        return Fill(
+            order_id=order.order_id,
+            symbol=order.symbol,
+            direction=order.direction,
+            fill_price=price,
+            size_units=order.size_units,
+            timestamp_utc=order.timestamp_utc,
+            commission=0.0,
+            slippage_pips=0.0,
+            broker_position_id=broker_position_id,
+        )
+
+
+def test_close_orders_always_reference_the_ticket_opened_for_that_trade(tmp_path):
+    """The bug this guards against: a close order that doesn't carry the
+    right broker position id can end up opening an unrelated position
+    instead of closing the intended one. `_FakeBrokerExecutionAdapter`
+    raises immediately if that ever happens.
+    """
+    bars_csv = tmp_path / "bars.csv"
+    bars = _write_bars_csv(bars_csv, n_days=6, seed=11)
+    strategy = load_strategy("forexml/strategies/definitions/london_range_breakout.yaml").model_copy(
+        update={"status": "active"}
+    )
+
+    broker = _FakeBrokerExecutionAdapter()
+    loop, *_stores = _make_loop(tmp_path, bars_csv, strategy, execution=broker)
+    for ts in bars["timestamp_utc"].to_list():
+        loop.poll(now=ts + timedelta(minutes=15))
+
+    assert len(broker.close_calls) > 0  # the scenario actually exercised a close
+    assert {p.broker_position_id for p in loop.open_positions} == broker.open_tickets

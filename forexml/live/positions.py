@@ -29,14 +29,15 @@ CREATE TABLE IF NOT EXISTS open_positions (
     opened_at TIMESTAMP,
     time_stop_at TIMESTAMP,
     mae DOUBLE,
-    mfe DOUBLE
+    mfe DOUBLE,
+    broker_position_id VARCHAR
 )
 """
 
 _COLUMNS = [
     "trade_id", "signal_id", "strategy_name", "symbol", "direction",
     "entry_price", "stop_price", "target_price", "size_units",
-    "opened_at", "time_stop_at", "mae", "mfe",
+    "opened_at", "time_stop_at", "mae", "mfe", "broker_position_id",
 ]
 
 
