@@ -102,6 +102,18 @@ Available filter types:
   `operator: in`, `value: [low, normal, high, extreme]` (any subset).
 - **`news_blackout`** — avoid trading around scheduled high-impact news.
   `minutes_before` / `minutes_after` the event.
+- **`time_of_day`** — restrict to a plain UTC hour window, with no
+  assumption of a named regional session. Use this instead of `session`
+  for an instrument with no real trading session — a round-the-clock
+  synthetic index, for example.
+  `start_hour`, `end_hour` (UTC, `start_hour` may exceed `end_hour` to
+  wrap past midnight, e.g. `start_hour: 22, end_hour: 4`).
+- **`volatility_spike_guard`** — block entry immediately after an
+  abnormally large single bar. Use this instead of `news_blackout` for an
+  instrument with no real news calendar to sit out — an outsized bar is
+  the same kind of shock a news blackout exists to avoid trading into.
+  `atr_key` (default `atr_14`), `multiple` (default `3.0`: blocks when
+  the last bar's high-low range exceeds `multiple` times that ATR).
 
 ### `entry.conditions`
 
