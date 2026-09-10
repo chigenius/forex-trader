@@ -1,7 +1,7 @@
 name: london_range_breakout_volatility_indices
 symbols: ["Volatility 25 (1s) Index", "Volatility 50 (1s) Index", "Volatility 100 (1s) Index"]
 timeframe: M15
-status: proposed        # proposed | approved | active | retired
+status: active        # proposed | approved | active | retired
 author: human           # human | agent
 enabled: true
 
