@@ -58,33 +58,41 @@ Everything under `./data` on the host is mounted at `/data` in the
 container and survives rebuilds — point `--store-path` / `--bars-path` /
 `--signal-store` there.
 
-**Paper/live trading.** The brief's recommendation (and the right one for
-this codebase) is a single small VPS running this container, co-located
-near the broker's servers for latency — not a cluster, not autoscaling.
-Two things to know before doing this:
+**Paper trading against live MT5 data.** `forexml paper-trade` (see
+`forexml/live/`) runs a continuous, scheduled loop: fetch the latest
+closed bar from MT5, run it through the same feature engine / rule
+engine / risk gate as a backtest, and simulate the fill — never a real
+order. State (bar store, signal store, open positions, ledger) persists
+to disk, so stopping and restarting the process picks up exactly where
+it left off. For a training period on your own machine, see
+[`docs/windows_paper_trading_setup.md`](docs/windows_paper_trading_setup.md).
 
-- Phase 1 built the MT5 execution adapter (`execution/mt5.py`) but not a
-  continuously-scheduled loop that calls it — there is currently nothing
-  to deploy that trades on a timer. That loop is future work.
-- The `MetaTrader5` Python package only talks to a running MT5 terminal,
-  which is Windows-only. This Docker image is Linux and can run the
-  data/backtest/analytics side of the pipeline, but a live deployment
-  needs a Windows host (or MT5 under Wine) for the broker connection.
-- `FOREXML_LIVE_TRADING=1` is the guard that lets `execution/mt5.py`
-  place a real order (see `docker-compose.yml`) — leave it unset
-  everywhere except the one box you actually intend to trade live from.
+**Live (real-money) trading.** Not built as a managed deployment yet —
+`execution/mt5.py` exists and is disabled by two independent guards
+(`FOREXML_LIVE_TRADING=1` plus an explicit constructor flag), but nothing
+currently routes `paper-trade`'s decisions to it; that wiring, plus
+picking it up from a properly deployed host, is deliberately left for
+later. When that time comes, the brief's recommendation (and the right
+one for this codebase) is a single small VPS running this container,
+co-located near the broker's servers for latency — not a cluster, not
+autoscaling. The `MetaTrader5` Python package only talks to a running MT5
+terminal, which is Windows-only, so that box needs to be Windows (or MT5
+under Wine) — this Docker image is Linux and only covers the
+data/backtest/analytics side.
 
 ## Documentation
 
 - [`docs/strategy_authoring_guide.md`](docs/strategy_authoring_guide.md) —
   written for the trader, not the engineer.
+- [`docs/windows_paper_trading_setup.md`](docs/windows_paper_trading_setup.md) —
+  running `forexml paper-trade` against MT5 on your own Windows machine.
 - `forexml/risk/example_limits.yaml` — example risk gate configuration.
 
 ## Layout
 
 See `forexml/` for the package: `data/`, `features/`, `strategies/`,
 `signals/`, `risk/`, `execution/`, `ledger/`, `analytics/`, `decisions/`,
-`backtest/`, `ml/` (scaffolded, empty in Phase 1), `cli/`. `tests/` holds
-the pytest + Hypothesis suite, including the point-in-time look-ahead
-tests and the backtest/live parity test called out in the brief's
-acceptance criteria.
+`backtest/`, `live/` (the paper-trading loop), `ml/` (scaffolded, empty in
+Phase 1), `cli/`. `tests/` holds the pytest + Hypothesis suite, including
+the point-in-time look-ahead tests and the backtest/live parity test
+called out in the brief's acceptance criteria.

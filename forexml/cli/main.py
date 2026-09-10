@@ -1,9 +1,11 @@
 """Command-line interface (brief deliverable 8): ingest data, validate a
-strategy, run a backtest, produce a report. This is the trader-facing
-surface — see docs/strategy_authoring_guide.md for the non-engineer view.
+strategy, run a backtest, produce a report, or run a live paper-trading
+loop. This is the trader-facing surface — see
+docs/strategy_authoring_guide.md for the non-engineer view.
 """
 from __future__ import annotations
 
+import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +29,8 @@ from ..features.indicators import (
     SimpleMovingAverage,
     SwingStructure,
 )
+from ..ledger import TradeLedger
+from ..live import LiveTradingLoop, OpenPositionStore
 from ..risk import RiskGate, RiskLimits
 from ..signals import SignalStore
 from ..strategies import load_strategy
@@ -48,6 +52,31 @@ DEFAULT_INDICATORS = [
 def _parse_dt(s: str) -> datetime:
     dt = datetime.fromisoformat(s)
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _risk_limits(strategy, risk_config_path) -> RiskLimits:
+    if risk_config_path:
+        with open(risk_config_path) as fh:
+            return RiskLimits.from_dict(yaml.safe_load(fh))
+    return RiskLimits(
+        max_risk_per_trade_pct=strategy.risk.risk_per_trade_pct,
+        max_concurrent_positions=strategy.risk.max_concurrent,
+        max_total_risk_pct=strategy.risk.risk_per_trade_pct * strategy.risk.max_concurrent,
+        correlated_exposure_cap_pct=strategy.risk.risk_per_trade_pct * strategy.risk.max_concurrent,
+        daily_loss_limit_pct=3.0,
+        weekly_loss_limit_pct=6.0,
+    )
+
+
+_CRON_FIELDS_BY_TIMEFRAME = {
+    "M1": {"minute": "*"},
+    "M5": {"minute": "*/5"},
+    "M15": {"minute": "0,15,30,45"},
+    "M30": {"minute": "0,30"},
+    "H1": {"minute": 0},
+    "H4": {"hour": "0,4,8,12,16,20", "minute": 0},
+    "D1": {"hour": 0, "minute": 0},
+}
 
 
 @click.group()
@@ -127,19 +156,7 @@ def backtest(strategy_path, symbol, bars_path, signal_store_path, initial_equity
     if bars.is_empty():
         raise click.UsageError(f"no bars for {symbol} found in {bars_path}")
 
-    if risk_config:
-        with open(risk_config) as fh:
-            limits = RiskLimits.from_dict(yaml.safe_load(fh))
-    else:
-        limits = RiskLimits(
-            max_risk_per_trade_pct=strategy.risk.risk_per_trade_pct,
-            max_concurrent_positions=strategy.risk.max_concurrent,
-            max_total_risk_pct=strategy.risk.risk_per_trade_pct * strategy.risk.max_concurrent,
-            correlated_exposure_cap_pct=strategy.risk.risk_per_trade_pct * strategy.risk.max_concurrent,
-            daily_loss_limit_pct=3.0,
-            weekly_loss_limit_pct=6.0,
-        )
-
+    limits = _risk_limits(strategy, risk_config)
     feature_engine = FeatureEngine(DEFAULT_INDICATORS)
     gate = RiskGate(limits)
     store = SignalStore(signal_store_path)
@@ -166,6 +183,105 @@ def backtest(strategy_path, symbol, bars_path, signal_store_path, initial_equity
             "backtest-only and were never routed past the risk gate to a real order"
         )
     store.close()
+
+
+@cli.command("paper-trade")
+@click.option("--strategy", "strategy_path", required=True, type=click.Path(exists=True))
+@click.option("--symbol", required=True)
+@click.option("--store-path", required=True, type=click.Path(), help="bar store directory")
+@click.option("--signal-store", "signal_store_path", type=click.Path(), default="signals.duckdb")
+@click.option("--positions-store", "positions_store_path", type=click.Path(), default="open_positions.duckdb")
+@click.option("--ledger-store", "ledger_store_path", type=click.Path(), default="ledger.duckdb")
+@click.option("--initial-equity", type=float, default=10_000.0)
+@click.option(
+    "--risk-config", type=click.Path(exists=True), default=None,
+    help="YAML with max_risk_per_trade_pct, max_concurrent_positions, max_total_risk_pct, "
+    "correlated_exposure_cap_pct, daily_loss_limit_pct, weekly_loss_limit_pct",
+)
+@click.option(
+    "--server-utc-offset", type=float, default=0.0,
+    help="your MT5 broker's server time minus UTC, in hours (check the terminal's clock vs. UTC)",
+)
+@click.option(
+    "--poll-delay-seconds", type=int, default=5,
+    help="wait this long after each bar-close boundary before polling, so the broker has time to publish it",
+)
+def paper_trade(
+    strategy_path, symbol, store_path, signal_store_path, positions_store_path, ledger_store_path,
+    initial_equity, risk_config, server_utc_offset, poll_delay_seconds,
+):
+    """Run a continuous paper-trading loop against a live MT5 terminal.
+
+    Fills are always simulated (SimulatedExecutionAdapter): this never
+    places a real order, regardless of strategy status or
+    FOREXML_LIVE_TRADING. Runs until interrupted (Ctrl+C); state
+    (bar store, signal store, open positions, ledger) all persists to
+    disk so it survives a restart.
+    """
+    try:
+        from apscheduler.schedulers.blocking import BlockingScheduler
+        from apscheduler.triggers.cron import CronTrigger
+    except ImportError as exc:
+        raise click.ClickException("apscheduler is required for paper-trade: pip install apscheduler") from exc
+
+    from ..data.adapters.mt5 import MT5Adapter
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    strategy = load_strategy(strategy_path)
+    if not is_tradeable(strategy.status):
+        click.echo(
+            f"warning: strategy status={strategy.status!r} — every signal will be logged "
+            "to the signal store but no paper position will ever open. Change `status` to "
+            "`active` yourself in the YAML once you're satisfied with backtest results.",
+            err=True,
+        )
+    if strategy.timeframe not in _CRON_FIELDS_BY_TIMEFRAME:
+        raise click.UsageError(f"unsupported timeframe for paper-trade: {strategy.timeframe!r}")
+
+    mt5_adapter = MT5Adapter(server_utc_offset_hours=server_utc_offset)
+    mt5_adapter.connect()
+
+    limits = _risk_limits(strategy, risk_config)
+    bar_store = BarStore(store_path)
+    signal_store = SignalStore(signal_store_path)
+    position_store = OpenPositionStore(positions_store_path)
+    ledger = TradeLedger(persist_path=ledger_store_path)
+    feature_engine = FeatureEngine(DEFAULT_INDICATORS)
+    gate = RiskGate(limits)
+
+    loop = LiveTradingLoop(
+        strategy=strategy,
+        symbol=symbol,
+        bar_adapter=mt5_adapter,
+        bar_store=bar_store,
+        feature_engine=feature_engine,
+        risk_gate=gate,
+        ledger=ledger,
+        position_store=position_store,
+        signal_store=signal_store,
+        initial_equity=initial_equity,
+    )
+
+    scheduler = BlockingScheduler(timezone="UTC")
+    trigger = CronTrigger(second=poll_delay_seconds, timezone="UTC", **_CRON_FIELDS_BY_TIMEFRAME[strategy.timeframe])
+    scheduler.add_job(loop.poll, trigger=trigger, id="paper-trade-poll")
+
+    click.echo(
+        f"paper-trading {strategy.name!r} on {symbol} ({strategy.timeframe}), "
+        f"{len(loop.open_positions)} open position(s) reloaded — Ctrl+C to stop"
+    )
+    try:
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
+        scheduler.shutdown(wait=False)
+        mt5_adapter.shutdown()
+        signal_store.close()
+        ledger.close()
+        position_store.close()
+        click.echo(f"stopped. final paper equity: {loop.equity:.2f}")
 
 
 @cli.command("report")

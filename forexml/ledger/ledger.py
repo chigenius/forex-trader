@@ -3,13 +3,49 @@
 Append-only by construction: there is no update or delete method. A
 correction is a new row, never a mutation of history, so the ledger can
 always be replayed to reconstruct exactly what happened.
+
+A one-shot backtest is fine with the default in-memory-only ledger — it
+lives exactly as long as the run. A continuously-running paper/live loop
+is not: a crash between restarts must not silently erase trade history,
+only the in-flight open positions get their own restart-safety net
+(`forexml.live.positions.OpenPositionStore`). Pass `persist_path` to back
+this ledger with the same DuckDB-on-disk pattern used by the signal store
+and decision log.
 """
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from pathlib import Path
 
+import duckdb
 import polars as pl
+
+_CREATE_TABLE = """
+CREATE TABLE IF NOT EXISTS ledger (
+    trade_id VARCHAR,
+    signal_id VARCHAR,
+    strategy_name VARCHAR,
+    symbol VARCHAR,
+    direction VARCHAR,
+    event VARCHAR,
+    timestamp_utc TIMESTAMP,
+    price DOUBLE,
+    size_units DOUBLE,
+    commission DOUBLE,
+    swap DOUBLE,
+    realised_pnl DOUBLE,
+    mae DOUBLE,
+    mfe DOUBLE,
+    realised_r DOUBLE
+)
+"""
+
+_COLUMNS = [
+    "trade_id", "signal_id", "strategy_name", "symbol", "direction", "event",
+    "timestamp_utc", "price", "size_units", "commission", "swap",
+    "realised_pnl", "mae", "mfe", "realised_r",
+]
 
 _SCHEMA = {
     "trade_id": pl.Utf8,
@@ -50,11 +86,32 @@ class LedgerEntry:
 
 
 class TradeLedger:
-    def __init__(self) -> None:
+    def __init__(self, persist_path: Path | str | None = None) -> None:
         self._entries: list[LedgerEntry] = []
+        self._con: duckdb.DuckDBPyConnection | None = None
+        if persist_path is not None:
+            path = Path(persist_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._con = duckdb.connect(str(path))
+            self._con.execute(_CREATE_TABLE)
+            self._load_existing()
+
+    def _load_existing(self) -> None:
+        rows = self._con.execute(f"SELECT {', '.join(_COLUMNS)} FROM ledger ORDER BY timestamp_utc").fetchall()
+        self._entries = [LedgerEntry(**dict(zip(_COLUMNS, row))) for row in rows]
 
     def record(self, entry: LedgerEntry) -> None:
         self._entries.append(entry)
+        if self._con is not None:
+            placeholders = ",".join(["?"] * len(_COLUMNS))
+            self._con.execute(
+                f"INSERT INTO ledger ({', '.join(_COLUMNS)}) VALUES ({placeholders})",
+                [getattr(entry, col) for col in _COLUMNS],
+            )
+
+    def close(self) -> None:
+        if self._con is not None:
+            self._con.close()
 
     def as_dataframe(self) -> pl.DataFrame:
         if not self._entries:
