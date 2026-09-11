@@ -170,11 +170,13 @@ this command is the account that receives the orders. Before running
 with `--execution mt5`, look at the terminal and confirm — by eye — which
 account is logged in.
 
-**What you'll see once it's running:** exactly the same console output
-as paper mode (`opened paper position ...` / `closed paper position
-...`), except positions now actually appear in MT5's **Trade** tab and
-your account balance moves. The command still prints
-`"*** --execution mt5: REAL orders will be sent..."` on startup as a
+**What you'll see once it's running:** the same kind of console output as
+paper mode, but the wording tells the two apart —
+`opened simulated position ...` in the default mode versus
+`opened REAL position ...` with `--execution mt5` — and real ones
+actually appear in MT5's **Trade** tab, moving your account balance. The
+command also prints `"*** --execution mt5: REAL orders will be
+sent..."` on startup as a
 last checkpoint.
 
 **Known gaps, honestly stated:**

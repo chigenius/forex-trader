@@ -98,7 +98,7 @@ class LiveTradingLoop:
         if not is_tradeable(strategy.status):
             log.warning(
                 "strategy %r has status=%r (not tradeable) — signals will be logged "
-                "as taken/rejected but no paper position will ever open",
+                "as taken/rejected but no position will ever open",
                 strategy.name,
                 strategy.status,
             )
@@ -115,6 +115,10 @@ class LiveTradingLoop:
         if self.signal_store is not None:
             self.signal_bus.subscribe(self.signal_store.append)
         self.execution = execution or SimulatedExecutionAdapter()
+        # Log wording below reflects which of these it actually is, so a
+        # console transcript alone tells you whether a fill was simulated
+        # or a real order — never ambiguous between the two.
+        self._mode_label = "simulated" if isinstance(self.execution, SimulatedExecutionAdapter) else "REAL"
         self.calendar = calendar or EconomicCalendar.empty()
         self.equity = initial_equity
         self.history_window_bars = history_window_bars
@@ -243,7 +247,9 @@ class LiveTradingLoop:
                 commission=fill.commission,
             )
         )
-        log.info("opened paper position %s %s @ %.5f", position.direction, self.symbol, fill.fill_price)
+        log.info(
+            "opened %s position %s %s @ %.5f", self._mode_label, position.direction, self.symbol, fill.fill_price
+        )
 
     def _manage_open_positions(self, decision_ts, high, low, close, last_bid, last_ask) -> None:
         still_open: list[LivePosition] = []
@@ -299,7 +305,12 @@ class LiveTradingLoop:
                 self.signal_store.resolve_outcome(position.signal_id, outcome, position.mae, position.mfe, realised_r)
             self.position_store.delete(position.trade_id)
             log.info(
-                "closed paper position %s %s @ %.5f pnl=%.2f", position.direction, self.symbol, fill.fill_price, pnl
+                "closed %s position %s %s @ %.5f pnl=%.2f",
+                self._mode_label,
+                position.direction,
+                self.symbol,
+                fill.fill_price,
+                pnl,
             )
 
         self.open_positions = still_open
